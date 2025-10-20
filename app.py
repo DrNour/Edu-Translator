@@ -529,81 +529,82 @@ with tabs[5]:
                         st.markdown("**Recent assignments (last 10):**")
                         st.dataframe(df_prev[["timestamp","code","title","group","deadline"]])
 
-    # ---- Student do assignment
+    # ---- Student do assignment (NO CODE REQUIRED)
     with tabs_asg[1]:
-        st.markdown("**Student:** Enter code to load the assignment, or pick one for your group.")
+        st.markdown("**Student:** Pick your assignment from your group's list. No code needed.**")
 
-        # List assignments for this group (if any)
+        # Ensure a group is set
+        g = (group_code or "").strip()
+        if not g:
+            st.info("Enter your **Group code** in the sidebar (e.g., ENG201-1) to see assignments.")
+        
         assignments_for_group = pd.DataFrame()
         if os.path.exists(ASSIGN_CSV):
             df_all = pd.read_csv(ASSIGN_CSV)
-            g = (group_code or "").strip()
             if g:
                 assignments_for_group = df_all[df_all["group"].fillna("") == g].copy()
 
-        if not assignments_for_group.empty:
-            label_to_code = {f"{r['code']} — {r['title']}": r['code'] for _, r in assignments_for_group.tail(50).iterrows()}
-            pick = st.selectbox("Assignments for my group", list(label_to_code.keys()))
-            if st.button("Open selected"):
-                code_in = label_to_code[pick]
-            else:
-                code_in = ""
+        if assignments_for_group.empty:
+            st.warning("No assignments found for your group yet. Ask your instructor to create one for your group.")
         else:
-            st.info("No assignments found for your group yet. You can still enter a code manually below.")
-            code_in = ""
+            # Sort by timestamp and pick latest by default
+            try:
+                assignments_for_group['timestamp'] = pd.to_datetime(assignments_for_group['timestamp'], errors='coerce')
+            except Exception:
+                pass
+            assignments_for_group = assignments_for_group.sort_values('timestamp')
+            options = [f"{r.code} — {r.title} (due: {r.get('deadline','')})" for _, r in assignments_for_group.iterrows()]
+            idx_default = len(options) - 1 if options else 0
+            pick = st.selectbox("Assignments for my group", options, index=idx_default)
 
-        code_in = st.text_input("…or enter an assignment code", value=code_in)
-        if st.button("Load assignment") and code_in.strip():
-            if os.path.exists(ASSIGN_CSV):
-                df = pd.read_csv(ASSIGN_CSV)
-                row = df[df["code"] == code_in].tail(1)
-                if row.empty:
-                    st.error("Code not found.")
-                else:
-                    r = row.iloc[0]
-                    st.markdown(f"### {r['title']}")
-                    st.caption(f"Mode: {r['mode']} — Deadline: {r.get('deadline','')}")
-                    st.text_area("Source text", value=r["text"], disabled=True, height=140)
+            # Map selection to row
+            sel = assignments_for_group.iloc[options.index(pick)] if options else None
 
-                    stud = st.text_area("Your translation (first draft)", height=160)
+            if sel is not None:
+                r = sel
+                st.markdown(f"### {r['title']}")
+                st.caption(f"Mode: {r['mode']} — Deadline: {r.get('deadline','')}")
+                st.text_area("Source text", value=r["text"], disabled=True, height=140)
 
-                    mt = r.get("mt_draft", "")
-                    if r["mode"].startswith("Post-edit"):
-                        st.markdown("**Machine draft to post-edit** (hidden until you type your own)")
-                        if stud.strip():
-                            if not mt:
-                                mt = llm([
-                                    {"role": "system", "content": "You are a translator."},
-                                    {"role": "user", "content": f"Translate from {src} to {tgt}: {r['text']}"},
-                                ])
-                            st.text_area("Machine draft", value=mt, height=140)
+                stud = st.text_area("Your translation (first draft)", height=160)
 
-                    post = st.text_area("Post-edited / final version", height=160)
-
-                    if st.button("Analyze my errors & create exercises") and post.strip():
-                        def analyze_and_exercise(src_text, stud_text, target_lang):
-                            rep = llm([
-                                {"role": "system", "content": "You are a rigorous translation assessor."},
-                                {"role": "user", "content": f"""
-                                Source: {src_text}
-                                Student translation: {stud_text}
-                                Classify errors into: LEXICAL CHOICE, GRAMMAR/SYNTAX, IDIOMATICITY, COLLOCATION, STYLE/REGISTER, PUNCTUATION.
-                                For each category, list concrete examples and brief fixes. Then propose 4 short practice items targeting the student's specific weaknesses (mix MCQ/fill-in-rewrite). Output with clear headings and bullets.
-                                Output language: {target_lang}.
-                                """},
+                mt = r.get("mt_draft", "")
+                if r["mode"].startswith("Post-edit"):
+                    st.markdown("**Machine draft to post-edit** (hidden until you type your own)")
+                    if stud.strip():
+                        if not mt:
+                            mt = llm([
+                                {"role": "system", "content": "You are a translator."},
+                                {"role": "user", "content": f"Translate from {src} to {tgt}: {r['text']}"},
                             ])
-                            return rep
-                        report = analyze_and_exercise(r["text"], post, tgt)
-                        st.markdown(report)
+                        st.text_area("Machine draft", value=mt, height=140)
 
-                    refl = st.text_area("Short reflection (2–3 sentences): what changed from your first draft and why?", height=100)
-                    if st.button("Submit assignment"):
-                        save_row(SUBMIT_CSV, {
-                            "timestamp": now_str(), "code": code_in, "student": student_name or "",
-                            "group": group_code or "", "session": session_id,
-                            "first_draft": stud, "final": post, "reflection": refl
-                        })
-                        st.success("Submitted.")
+                post = st.text_area("Post-edited / final version", height=160)
+
+                if st.button("Analyze my errors & create exercises") and post.strip():
+                    def analyze_and_exercise(src_text, stud_text, target_lang):
+                        rep = llm([
+                            {"role": "system", "content": "You are a rigorous translation assessor."},
+                            {"role": "user", "content": f"""
+                            Source: {src_text}
+                            Student translation: {stud_text}
+                            Classify errors into: LEXICAL CHOICE, GRAMMAR/SYNTAX, IDIOMATICITY, COLLOCATION, STYLE/REGISTER, PUNCTUATION.
+                            For each category, list concrete examples and brief fixes. Then propose 4 short practice items targeting the student's specific weaknesses (mix MCQ/fill-in-rewrite). Output with clear headings and bullets.
+                            Output language: {target_lang}.
+                            """},
+                        ])
+                        return rep
+                    report = analyze_and_exercise(r["text"], post, tgt)
+                    st.markdown(report)
+
+                refl = st.text_area("Short reflection (2–3 sentences): what changed from your first draft and why?", height=100)
+                if st.button("Submit assignment"):
+                    save_row(SUBMIT_CSV, {
+                        "timestamp": now_str(), "code": r["code"], "student": student_name or "",
+                        "group": group_code or "", "session": session_id,
+                        "first_draft": stud, "final": post, "reflection": refl
+                    })
+                    st.success("Submitted.")
 
     # ---- Teacher view (Instructor gated)
     with tabs_asg[2]:

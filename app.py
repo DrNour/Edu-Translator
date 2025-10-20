@@ -131,6 +131,28 @@ def append_log(csv_path: str, row: Dict[str, Any]):
 # ------------- Sidebar (identity + settings) -------------
 with st.sidebar:
     st.header("Settings")
+
+    # ---- Role & permissions (optional) ----
+    roles_cfg = {}
+    try:
+        roles_cfg = st.secrets.get("roles", {})
+    except Exception:
+        roles_cfg = {}
+    INSTR_PWD = roles_cfg.get("instructor_password")
+
+    if "role" not in st.session_state:
+        st.session_state.role = "Student"
+    role = st.selectbox("Role", ["Student", "Instructor"], index=0 if st.session_state.role == "Student" else 1)
+    st.session_state.role = role
+
+    instructor_unlocked = (role == "Instructor")
+    if role == "Instructor" and INSTR_PWD:
+        ipwd = st.text_input("Instructor password", type="password")
+        if ipwd != INSTR_PWD:
+            st.warning("Enter the instructor password to unlock instructor tools.")
+            instructor_unlocked = False
+        else:
+            st.success("Instructor tools unlocked.")
     # Lightweight identity for class analytics
     student_name = st.text_input("Your name / initials (optional)")
     group_code = st.text_input("Class/Group code (e.g., ENG201-1)")
@@ -472,36 +494,65 @@ with tabs[5]:
 
     tabs_asg = st.tabs(["Create (Instructor)", "Do Assignment (Student)", "Submissions (Teacher)"])
 
-    # ---- Create
+    # ---- Create (Instructor gated)
     with tabs_asg[0]:
-        st.markdown("**Instructor:** Create an exercise and share its code with students.")
-        as_title = st.text_input("Title")
-        as_text = st.text_area("Source text to translate / post-edit", height=150)
-        as_mode = st.radio("Mode", ["Translate first (student writes their draft)", "Post-edit given MT (show machine draft)"])
-        as_deadline = st.text_input("Deadline (optional, e.g., 2025-11-15 23:59)")
-        show_mt = st.checkbox("If Post-edit mode: generate a machine draft now", value=True)
-        if st.button("Create assignment"):
-            if not as_title or not as_text:
-                st.error("Please fill title and source text.")
-            else:
-                code = new_code()
-                mt_draft = ""
-                if as_mode.startswith("Post-edit") and show_mt:
-                    mt_draft = llm([
-                        {"role": "system", "content": "You are a translator."},
-                        {"role": "user", "content": f"Translate from {src} to {tgt}: {as_text}"},
-                    ])
-                save_row(ASSIGN_CSV, {
-                    "timestamp": now_str(), "code": code, "title": as_title, "mode": as_mode,
-                    "source_lang": src, "target_lang": tgt, "domain": domain, "tone": tone,
-                    "deadline": as_deadline, "text": as_text, "mt_draft": mt_draft
-                })
-                st.success(f"Assignment created. Code: **{code}**")
+        if not instructor_unlocked:
+            st.info("Instructor tools are locked. Switch role to Instructor and enter the password in the sidebar.")
+        else:
+            st.markdown("**Instructor:** Create an exercise and share its code with students.")
+            as_title = st.text_input("Title")
+            as_text = st.text_area("Source text to translate / post-edit", height=150)
+            as_mode = st.radio("Mode", ["Translate first (student writes their draft)", "Post-edit given MT (show machine draft)"])
+            as_deadline = st.text_input("Deadline (optional, e.g., 2025-11-15 23:59)")
+            show_mt = st.checkbox("If Post-edit mode: generate a machine draft now", value=True)
+            if st.button("Create assignment"):
+                if not as_title or not as_text:
+                    st.error("Please fill title and source text.")
+                else:
+                    code = new_code()
+                    mt_draft = ""
+                    if as_mode.startswith("Post-edit") and show_mt:
+                        mt_draft = llm([
+                            {"role": "system", "content": "You are a translator."},
+                            {"role": "user", "content": f"Translate from {src} to {tgt}: {as_text}"},
+                        ])
+                    save_row(ASSIGN_CSV, {
+                        "timestamp": now_str(), "code": code, "title": as_title, "mode": as_mode,
+                        "source_lang": src, "target_lang": tgt, "domain": domain, "tone": tone,
+                        "deadline": as_deadline, "text": as_text, "mt_draft": mt_draft,
+                        "instructor": student_name or "", "group": group_code or ""
+                    })
+                    st.success(f"Assignment created. Code: **{code}**")
+                    st.text_input("Copy code", value=code)
+                    if os.path.exists(ASSIGN_CSV):
+                        df_prev = pd.read_csv(ASSIGN_CSV).tail(10)
+                        st.markdown("**Recent assignments (last 10):**")
+                        st.dataframe(df_prev[["timestamp","code","title","group","deadline"]])
 
     # ---- Student do assignment
     with tabs_asg[1]:
-        st.markdown("**Student:** Enter code to load the assignment.")
-        code_in = st.text_input("Assignment code")
+        st.markdown("**Student:** Enter code to load the assignment, or pick one for your group.")
+
+        # List assignments for this group (if any)
+        assignments_for_group = pd.DataFrame()
+        if os.path.exists(ASSIGN_CSV):
+            df_all = pd.read_csv(ASSIGN_CSV)
+            g = (group_code or "").strip()
+            if g:
+                assignments_for_group = df_all[df_all["group"].fillna("") == g].copy()
+
+        if not assignments_for_group.empty:
+            label_to_code = {f"{r['code']} — {r['title']}": r['code'] for _, r in assignments_for_group.tail(50).iterrows()}
+            pick = st.selectbox("Assignments for my group", list(label_to_code.keys()))
+            if st.button("Open selected"):
+                code_in = label_to_code[pick]
+            else:
+                code_in = ""
+        else:
+            st.info("No assignments found for your group yet. You can still enter a code manually below.")
+            code_in = ""
+
+        code_in = st.text_input("…or enter an assignment code", value=code_in)
         if st.button("Load assignment") and code_in.strip():
             if os.path.exists(ASSIGN_CSV):
                 df = pd.read_csv(ASSIGN_CSV)
@@ -514,10 +565,8 @@ with tabs[5]:
                     st.caption(f"Mode: {r['mode']} — Deadline: {r.get('deadline','')}")
                     st.text_area("Source text", value=r["text"], disabled=True, height=140)
 
-                    # Student first draft
                     stud = st.text_area("Your translation (first draft)", height=160)
 
-                    # Post-edit workflow
                     mt = r.get("mt_draft", "")
                     if r["mode"].startswith("Post-edit"):
                         st.markdown("**Machine draft to post-edit** (hidden until you type your own)")
@@ -531,7 +580,6 @@ with tabs[5]:
 
                     post = st.text_area("Post-edited / final version", height=160)
 
-                    # Error analysis + targeted exercises
                     if st.button("Analyze my errors & create exercises") and post.strip():
                         def analyze_and_exercise(src_text, stud_text, target_lang):
                             rep = llm([
@@ -557,94 +605,14 @@ with tabs[5]:
                         })
                         st.success("Submitted.")
 
-    # ---- Teacher view
+    # ---- Teacher view (Instructor gated)
     with tabs_asg[2]:
-        if os.path.exists(SUBMIT_CSV):
-            df = pd.read_csv(SUBMIT_CSV)
-            st.dataframe(df.tail(50))
-            st.download_button("Download submissions.csv", data=df.to_csv(index=False).encode("utf-8"), file_name="submissions.csv")
+        if not instructor_unlocked:
+            st.info("Instructor tools are locked. Switch role to Instructor and enter the password in the sidebar.")
         else:
-            st.info("No submissions yet.")
-
-# ------------- Teacher Dashboard Tab -------------
-with tabs[6]:
-    st.subheader("Teacher Dashboard (anonymized)")
-    col1, col2 = st.columns(2)
-
-    def top_counts(csv_name: str, column: str, n: int = 10):
-        path = os.path.join(LOG_DIR, csv_name)
-        if not os.path.exists(path):
-            return pd.DataFrame(columns=[column, "count"])  # empty
-        df = pd.read_csv(path)
-        if column not in df.columns:
-            return pd.DataFrame(columns=[column, "count"])  # empty
-        vc = df[column].fillna("").value_counts().reset_index()
-        vc.columns = [column, "count"]
-        return vc.head(n)
-
-    with col1:
-        st.markdown("**Most translated texts (by group)**")
-        path_t = os.path.join(LOG_DIR, "translations.csv")
-        if os.path.exists(path_t):
-            trans_df = pd.read_csv(path_t)
-            st.dataframe(trans_df.tail(20))
-        else:
-            st.info("No translations logged yet.")
-
-    with col2:
-        st.markdown("**Glossary lookups (recent)**")
-        path_g = os.path.join(LOG_DIR, "glossary.csv")
-        if os.path.exists(path_g):
-            gloss_df = pd.read_csv(path_g)
-            st.dataframe(gloss_df.tail(20))
-        else:
-            st.info("No glossary entries yet.")
-
-# ------------- Export Tab -------------
-with tabs[7]:
-    st.subheader("Export My Session")
-
-    if st.button("Generate portfolio (Markdown)"):
-        parts = [f"# EduTranslator Portfolio\nGenerated: {now_str()}\nSession: {session_id}\nStudent: {student_name or ''}\nGroup: {group_code or ''}\n\n"]
-        # Reflections
-        ref_p = os.path.join(LOG_DIR, "reflections.csv")
-        if os.path.exists(ref_p):
-            df = pd.read_csv(ref_p)
-            mine = df[df["session"] == session_id]
-            if not mine.empty:
-                parts.append("## Reflections\n")
-                for _, r in mine.iterrows():
-                    parts.append(f"- **{r['timestamp']}** — {r['reflection'][:500]}\n")
-        # Glossary
-        g_p = os.path.join(LOG_DIR, "glossary.csv")
-        if os.path.exists(g_p):
-            df = pd.read_csv(g_p)
-            mine = df[df["session"] == session_id]
-            if not mine.empty:
-                parts.append("\n## My Glossary\n")
-                for _, r in mine.iterrows():
-                    parts.append(f"### {r['lemma']}\n\n{r['notes']}\n\n")
-        md = "\n".join(parts)
-        st.download_button(
-            "Download portfolio.md",
-            data=md.encode("utf-8"),
-            file_name=f"portfolio_{session_id}.md",
-            mime="text/markdown",
-        )
-
-    if st.button("Download my CSV logs (ZIP)"):
-        mem = io.BytesIO()
-        with zipfile.ZipFile(mem, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for fname in ["translations.csv", "reflections.csv", "glossary.csv", "assignments.csv", "submissions.csv"]:
-                fpath = os.path.join(LOG_DIR, fname)
-                if os.path.exists(fpath):
-                    zf.write(fpath, arcname=fname)
-        mem.seek(0)
-        st.download_button(
-            label="Download logs.zip",
-            data=mem,
-            file_name=f"logs_{session_id}.zip",
-            mime="application/zip",
-        )
-
-st.caption("© EduTranslator Plus — for educational use. Keep API keys private.")
+            if os.path.exists(SUBMIT_CSV):
+                df = pd.read_csv(SUBMIT_CSV)
+                st.dataframe(df.tail(50))
+                st.download_button("Download submissions.csv", data=df.to_csv(index=False).encode("utf-8"), file_name="submissions.csv")
+            else:
+                st.info("No submissions yet.")

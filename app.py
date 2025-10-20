@@ -104,19 +104,22 @@ if not _in_window(OPEN_START, OPEN_END):
 
 # Optional class-level password gate
 if REQUIRED_PASSWORD:
-    if not st.session_state.get("_authed"):
-        with st.sidebar:
-            st.warning("This app is restricted. Enter the class password to continue.")
-            pwd = st.text_input("Class password", type="password")
-            if st.button("Unlock"):
-                if pwd == REQUIRED_PASSWORD:
-                    st.session_state._authed = True
-                    st.success("Unlocked for this session.")
-                    st.experimental_rerun()
-                else:
-                    st.error("Wrong password.")
-        if not st.session_state.get("_authed"):
-            st.stop()
+    if not st.session_state.is_instructor:
+    with st.expander("Instructor login", expanded=False):
+        ipwd = st.text_input("Instructor password", type="password")
+        if st.button("Unlock instructor tools"):
+            if INSTR_PWD and ipwd == INSTR_PWD:
+                st.session_state.is_instructor = True
+                st.success("Instructor tools unlocked.")
+                st.rerun()   # ✅ new
+            else:
+                st.error("Wrong instructor password.")
+else:
+    st.success("Instructor mode active")
+    if st.button("Lock instructor mode"):
+        st.session_state.is_instructor = False
+        st.rerun()   # ✅ new
+
 
 # ===================== Utilities =====================
 LOG_DIR = "logs"
@@ -794,3 +797,4 @@ with tabs[7]:
         )
 
 st.caption("© EduTranslator Plus — for educational use. Keep API keys private.")
+

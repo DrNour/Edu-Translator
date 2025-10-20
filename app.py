@@ -307,9 +307,10 @@ Format with clear headings and bullets.
 
             # Display assignment
             st.text_area("Source text", value=sel["text"], height=140, disabled=True)
-            mode = (sel.get("mode") or "Translate first (student writes their draft)").strip()
-            source_lang = sel.get("source_lang") or src
-            target_lang = sel.get("target_lang") or tgt
+            mode = str(sel["mode"]) if "mode" in sel else "Translate first (student writes their draft)"
+            source_lang = str(sel["source_lang"]) if "source_lang" in sel else src
+            target_lang = str(sel["target_lang"]) if "target_lang" in sel else tgt
+
 
             # Student inputs
             if mode.startswith("Post-edit"):
@@ -401,4 +402,5 @@ with tabs[4]:
             st.info("No submissions yet.")
 
 st.caption("© EduTranslator Plus — for educational use.")
+
 

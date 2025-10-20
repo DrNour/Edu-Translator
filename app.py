@@ -176,8 +176,10 @@ with tabs[2]:
         st.markdown(out)
 
 # ---------- ASSIGNMENTS ----------
+# ---------- ASSIGNMENTS ----------
 with tabs[3]:
     st.subheader("Assignments")
+
     ASSIGN_CSV = os.path.join(LOG_DIR, "assignments.csv")
     SUBMIT_CSV = os.path.join(LOG_DIR, "submissions.csv")
 
@@ -188,36 +190,201 @@ with tabs[3]:
             df = pd.concat([old, df], ignore_index=True)
         df.to_csv(path, index=False)
 
+    # Helpers
+    def generate_mt(src_text: str, source_lang: str, target_lang: str) -> str:
+        return llm([
+            {"role": "system", "content": "You are a professional translator."},
+            {"role": "user", "content": f"Translate from {source_lang} to {target_lang}:\n{src_text}"}
+        ])
+
+    def analyze_and_exercise(src_text: str, student_text: str, target_lang: str) -> str:
+        return llm([
+            {"role": "system", "content": "You are a rigorous translation assessor and teacher."},
+            {"role": "user", "content": f"""
+Source:
+{src_text}
+
+Student translation:
+{student_text}
+
+1) Classify issues using ONLY these labels:
+   LEXICAL CHOICE, GRAMMAR/SYNTAX, IDIOMATICITY, COLLOCATION, STYLE/REGISTER, PUNCTUATION.
+   Give 1–3 concrete examples per present category with brief fixes.
+
+2) Produce 4 short practice items targeting the student's weaknesses:
+   - Mix MCQ / fill-in / rewrite.
+   - Keep prompts short.
+   - Output language: {target_lang}.
+
+Format with clear headings and bullets.
+"""}],
+        )
+
+    # =============== INSTRUCTOR ===============
     if st.session_state.is_instructor:
         st.markdown("### 🧑‍🏫 Create Assignment")
+
         title = st.text_input("Assignment title")
-        src_text = st.text_area("Source text", height=120)
-        if st.button("Create assignment") and title.strip() and src_text.strip():
-            code = group_code or "ALL"
-            save_row(ASSIGN_CSV, {
-                "timestamp": now_str(), "group": group_code, "title": title, "text": src_text
-            })
-            st.success(f"Assignment created for group {group_code}")
-    else:
-        st.markdown("### 🧑‍🎓 Do Assignment")
-        if os.path.exists(ASSIGN_CSV):
-            df = pd.read_csv(ASSIGN_CSV)
-            g = (group_code or "").strip()
-            df = df[df["group"] == g] if g else df
-            if df.empty:
-                st.info("No assignments for your group yet.")
+        src_text = st.text_area("Source text", height=140)
+        mode = st.radio(
+            "Mode",
+            ["Translate first (student writes their draft)",
+             "Post-edit given MT (show machine draft)"],
+            horizontal=False
+        )
+        # (Optional) generate MT now and store it, so all students see the same draft
+        precompute_mt = st.checkbox("Precompute & store machine draft now (recommended for consistency)", value=True)
+
+        # Languages: use sidebar selections (src/tgt)
+        # If you want per-assignment languages, add two selectboxes here instead.
+        if st.button("Create assignment"):
+            if not title.strip() or not src_text.strip():
+                st.error("Please provide a title and source text.")
             else:
-                options = [f"{r.title}" for _, r in df.iterrows()]
-                pick = st.selectbox("Assignments for my group", options)
-                sel = df[df["title"] == pick].iloc[0]
-                st.text_area("Source text", value=sel["text"], height=120, disabled=True)
-                translation = st.text_area("Your translation", height=160)
+                mt_draft = ""
+                if mode.startswith("Post-edit") and precompute_mt:
+                    # Use autodetect if enabled, else the chosen sidebar languages
+                    source_lang = src if not auto_detect else ("Arabic" if re.search(r"[\u0600-\u06FF]", src_text) else "English")
+                    target_lang = "English" if source_lang == "Arabic" else "Arabic"
+                    mt_draft = generate_mt(src_text, source_lang, target_lang)
+
+                save_row(ASSIGN_CSV, {
+                    "timestamp": now_str(),
+                    "group": group_code or "",
+                    "title": title,
+                    "text": src_text,
+                    "mode": mode,
+                    "mt_draft": mt_draft,
+                    "source_lang": src,
+                    "target_lang": tgt,
+                    "instructor": student_name or ""
+                })
+                st.success(f"Assignment created for group {group_code or '(no group set)'}")
+                if mt_draft:
+                    with st.expander("Preview stored machine draft"):
+                        st.text_area("Stored MT draft", value=mt_draft, height=140, disabled=True)
+
+        # Show last few created
+        if os.path.exists(ASSIGN_CSV):
+            df_prev = pd.read_csv(ASSIGN_CSV)
+            if not df_prev.empty:
+                st.markdown("**Recent assignments**")
+                cols_to_show = [c for c in ["timestamp", "group", "title", "mode"] if c in df_prev.columns]
+                st.dataframe(df_prev.tail(10)[cols_to_show])
+
+        st.markdown("---")
+
+    # =============== STUDENT ===============
+    st.markdown("### 🧑‍🎓 Do Assignment")
+    g = (group_code or "").strip()
+    if not os.path.exists(ASSIGN_CSV):
+        st.info("No assignments exist yet.")
+    else:
+        df = pd.read_csv(ASSIGN_CSV)
+
+        # Backward compatibility: ensure columns exist
+        for col in ["mode", "mt_draft", "source_lang", "target_lang"]:
+            if col not in df.columns:
+                df[col] = ""
+
+        # Filter by group if provided
+        if g:
+            df = df[df["group"].fillna("") == g]
+
+        if df.empty:
+            st.info("No assignments for your group yet.")
+        else:
+            # Show the newest first by timestamp
+            try:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                df = df.sort_values("timestamp")
+            except Exception:
+                pass
+
+            options = [f"{r.title}  —  {r.mode or 'Translate first'}" for _, r in df.iterrows()]
+            pick = st.selectbox("Assignments for my group", options, index=len(options)-1)
+            sel = df.iloc[options.index(pick)]
+
+            # Display assignment
+            st.text_area("Source text", value=sel["text"], height=140, disabled=True)
+            mode = (sel.get("mode") or "Translate first (student writes their draft)").strip()
+            source_lang = sel.get("source_lang") or src
+            target_lang = sel.get("target_lang") or tgt
+
+            # Student inputs
+            if mode.startswith("Post-edit"):
+                st.caption("Mode: Post-edit given MT")
+
+                # Allow student to edit the machine draft
+                # If instructor stored mt_draft, show it; otherwise let student generate it
+                mt_area_key = "mt_draft_editable"
+                mt_default = sel.get("mt_draft") or ""
+                colA, colB = st.columns([1,1])
+                with colA:
+                    if not mt_default and st.button("Generate MT draft"):
+                        mt_default = generate_mt(sel["text"], source_lang, target_lang)
+                with colB:
+                    st.write("")
+
+                mt_editable = st.text_area("Machine draft (editable)", value=mt_default, height=140, key=mt_area_key)
+                student_final = st.text_area("Post-edited / final version", height=160, key="post_edit_final")
+
+                # Feedback buttons
+                if st.button("Analyze my translation & create exercises"):
+                    feedback = analyze_and_exercise(sel["text"], student_final.strip() or mt_editable.strip(), target_lang)
+                    st.markdown(feedback)
+                    st.session_state["latest_feedback"] = feedback
+
                 if st.button("Submit"):
+                    feedback = st.session_state.get("latest_feedback", "")
+                    if not feedback:
+                        # Auto-generate feedback on submit if they didn't click analyze
+                        feedback = analyze_and_exercise(sel["text"], student_final.strip() or mt_editable.strip(), target_lang)
+                        st.markdown(feedback)
+                        st.session_state["latest_feedback"] = feedback
+
                     save_row(SUBMIT_CSV, {
-                        "timestamp": now_str(), "student": student_name, "group": group_code,
-                        "assignment": sel["title"], "translation": translation
+                        "timestamp": now_str(),
+                        "student": student_name or "",
+                        "group": group_code or "",
+                        "assignment": sel["title"],
+                        "mode": mode,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                        "mt_editable": mt_editable,
+                        "final": student_final,
+                        "feedback": feedback
                     })
-                    st.success("Submitted!")
+                    st.success("Submitted! Feedback displayed above and saved to submissions.csv.")
+
+            else:
+                st.caption("Mode: Translate first (student writes their draft)")
+                student_draft = st.text_area("Your translation (first draft)", height=160)
+
+                if st.button("Analyze my translation & create exercises"):
+                    feedback = analyze_and_exercise(sel["text"], student_draft.strip(), target_lang)
+                    st.markdown(feedback)
+                    st.session_state["latest_feedback"] = feedback
+
+                if st.button("Submit"):
+                    feedback = st.session_state.get("latest_feedback", "")
+                    if not feedback and student_draft.strip():
+                        feedback = analyze_and_exercise(sel["text"], student_draft.strip(), target_lang)
+                        st.markdown(feedback)
+                        st.session_state["latest_feedback"] = feedback
+
+                    save_row(SUBMIT_CSV, {
+                        "timestamp": now_str(),
+                        "student": student_name or "",
+                        "group": group_code or "",
+                        "assignment": sel["title"],
+                        "mode": mode,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                        "final": student_draft,
+                        "feedback": feedback
+                    })
+                    st.success("Submitted! Feedback displayed above and saved to submissions.csv.")
 
 # ---------- TEACHER DASHBOARD ----------
 with tabs[4]:
@@ -234,3 +401,4 @@ with tabs[4]:
             st.info("No submissions yet.")
 
 st.caption("© EduTranslator Plus — for educational use.")
+

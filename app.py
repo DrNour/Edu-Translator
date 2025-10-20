@@ -162,10 +162,11 @@ def append_log(csv_path: str, row: Dict[str, Any]):
     df.to_csv(csv_path, index=False)
 
 # ===================== Sidebar =====================
+# ===================== Sidebar =====================
 with st.sidebar:
     st.header("Settings")
 
-    # Instructor login (no role selector)
+    # --- Instructor login (password only; no role selector) ---
     roles_cfg = {}
     try:
         roles_cfg = st.secrets.get("roles", {})
@@ -183,14 +184,21 @@ with st.sidebar:
                 if INSTR_PWD and ipwd == INSTR_PWD:
                     st.session_state.is_instructor = True
                     st.success("Instructor tools unlocked.")
-                    st.experimental_rerun()
+                    st.rerun()   # Streamlit ≥1.32
                 else:
                     st.error("Wrong instructor password.")
     else:
         st.success("Instructor mode active")
         if st.button("Lock instructor mode"):
             st.session_state.is_instructor = False
-            st.experimental_rerun()
+            st.rerun()
+
+    # --- (rest of your sidebar fields go below) ---
+    student_name = st.text_input("Your name / initials (optional)")
+    group_code   = st.text_input("Class/Group code (e.g., ENG201-1)")
+    auto_detect  = st.checkbox("Auto-detect source language", value=True)
+    src = st.selectbox("Source language", ["Arabic", "English"], index=0)
+    tgt = st.selectbox("Target language", ["English", "Arabic"], index=1)
 
     # Lightweight identity for class analytics
     student_name = st.text_input("Your name / initials (optional)")
@@ -797,4 +805,5 @@ with tabs[7]:
         )
 
 st.caption("© EduTranslator Plus — for educational use. Keep API keys private.")
+
 
